@@ -14,13 +14,13 @@ check_valid_cdk_image () {
     local image_path="$1"
 
     if [ -z "$image_path" ]; then
-        #echo "Error: No image path provided" >&2
+        echo "Error: No image path provided" >&2
         return 1
     fi
 
     # Try to read dimensions, capture errors
     if ! identify -format "%w %h" "$image_path" >/dev/null 2>&1; then # Put in /dev/null to suppress error message
-        #echo "Error: Invalid image file" >&2
+        echo "Error: Invalid image file" >&2
         return 1  # Return with error
     fi
 
@@ -30,7 +30,7 @@ check_valid_cdk_image () {
     if [ "$width" -ge 9 ] && [ "$height" -ge 9 ]; then # Even the smallest valid image is 9x9, and an error is 8x8
         return 0
     else
-        #echo "Error: Invalid image dimensions width=$width and height=$height" >&2
+        echo "Error: Invalid image dimensions width=$width and height=$height" >&2
         return 1
     fi
 }
@@ -71,18 +71,14 @@ smiles_to_iupac() {
 }
 
 smiles_to_iupac_stout() {
-    mamba activate STOUT
+    mamba activate mortals
     var="import os; os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'; from STOUT import translate_forward; print(translate_forward(\"""$@""\"))"; python -c "$var"
     mamba deactivate
 }
 
 opsin_name_to_smiles() {
-    #local name="$1"
-    mamba activate STOUT
-    # Translate the following python script
-    # from py2opsin import py2opsin
-    # print(py2opsin(chemical_name="name", output_format="SMILES"))
-    
+    mamba activate mortals
+
     local name=""
     while (( "$#" )); do
         # If the argument is not a pipe
@@ -93,8 +89,6 @@ opsin_name_to_smiles() {
             break
         fi
     done
-
-    #echo "Name: $name"
 
     var="from py2opsin import py2opsin; print(py2opsin(chemical_name=\"""$name""\", output_format='SMILES'))"; python -c "$var"
     mamba deactivate
@@ -117,11 +111,6 @@ Options:
 
 This script fetches and displays a molecule image based on SMILES input."
     
-    # Check if cdk app is initialized
-    # if ! pgrep -f 'dynamic_wallpaper.sh' > /dev/null; then
-    #     (nohup ~/bash_scripts/dynamic_wallpaper.sh &>/dev/null &)
-    # fi
-
     if ! pgrep -f "cdkdepict-webapp" > /dev/null; then
         echo "\033[1;33mLocal CDK was not running, initializing it...\033[0m"
         (nohup java -Dserver.port=8081 -jar  ~/Documents/liac/cdk_depict/cdkdepict-webapp/target/cdkdepict-webapp-1.11-SNAPSHOT.war &> /dev/null &)
@@ -139,6 +128,7 @@ This script fetches and displays a molecule image based on SMILES input."
             echo "\033[1;31mCDK failed to initialize.\033[0m"
             return 1
         fi
+        sleep 3
     fi
 
 
