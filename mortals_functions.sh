@@ -14,13 +14,13 @@ check_valid_cdk_image () {
     local image_path="$1"
 
     if [ -z "$image_path" ]; then
-        echo "Error: No image path provided" >&2
+        #echo "Error: No image path provided" >&2
         return 1
     fi
 
     # Try to read dimensions, capture errors
     if ! identify -format "%w %h" "$image_path" >/dev/null 2>&1; then # Put in /dev/null to suppress error message
-        echo "Error: Invalid image file" >&2
+        #echo "Error: Invalid image file" >&2
         return 1  # Return with error
     fi
 
@@ -30,7 +30,7 @@ check_valid_cdk_image () {
     if [ "$width" -ge 9 ] && [ "$height" -ge 9 ]; then # Even the smallest valid image is 9x9, and an error is 8x8
         return 0
     else
-        echo "Error: Invalid image dimensions width=$width and height=$height" >&2
+        #echo "Error: Invalid image dimensions width=$width and height=$height" >&2
         return 1
     fi
 }
