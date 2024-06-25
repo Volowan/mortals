@@ -96,8 +96,9 @@ opsin_name_to_smiles() {
 
 fetch_image_cdk() {
     # Help message
-    local help_msg="Usage: fetch_image_cdk SMILES_STRING [OPTIONS]
-        fetch_image_cdk -h | --help
+    local help_msg="Usage:
+  fetch_image_cdk SMILES_STRING [OPTIONS]
+  fetch_image_cdk -h | --help
 
 Options:
   -m, --mapped      Set annotation to colormap, [default: off].
@@ -119,7 +120,6 @@ This script fetches and displays a molecule image based on SMILES input."
         do
             sleep 0.1
             if pgrep -f "cdkdepict-webapp" > /dev/null; then
-                echo "\033[1;32mCDK initialized successfully.\033[0m"
                 correclty_initialized=true
                 break
             fi
@@ -129,6 +129,7 @@ This script fetches and displays a molecule image based on SMILES input."
             return 1
         fi
         sleep 3
+        echo "\033[1;32mCDK initialized successfully.\033[0m"
     fi
 
 
@@ -232,8 +233,9 @@ This script fetches and displays a molecule image based on SMILES input."
 
 fetch_image_cdk_name () {
 
-    local help_msg="Usage: fetch_image_cdk_name IUPAC_OR_COMMON_NAME [OPTIONS]
-        fetch_image_cdk_name -h | --help
+    local help_msg="Usage:
+  fetch_image_cdk_name IUPAC_OR_COMMON_NAME [OPTIONS]
+  fetch_image_cdk_name -h | --help
 
 Options:
   -m, --mapped      Set annotation to colormap, [default: off].
@@ -264,4 +266,145 @@ This script fetches and displays a molecule image based on its common or iupac n
     local smiles=$(opsin_name_to_smiles "${full_name}")
 
     fetch_image_cdk "$smiles" "${@}"
+}
+
+smiles_to_3d_structure() {
+    mamba activate mortals
+    
+    local smi=$1
+    local python_code="from rdkit.Chem.AllChem import EmbedMolecule; from rdkit.Chem import MolFromSmiles, AddHs, MolToXYZBlock; mol = MolFromSmiles(\"$smi\"); mol = AddHs(mol); EmbedMolecule(mol); print(MolToXYZBlock(mol))"
+    python -c "$python_code" > /tmp/3d_structure.xyz
+
+    mamba deactivate
+}
+
+snapshot_3d() {
+    local help_msg="Usage:
+  rotation_3d_pictures INPUT_FILE [OPTIONS]
+  rotation_3d_pictures -h | --help
+
+Options:
+  -o, --output       Set the output folder, requires a value [default: /tmp/chimerax_snapshots].
+  -n, --name         Set a custom name for the molecule, requires a value [default: INPUT_FILE base name].
+  -p, --pictures     Set the number of pictures to take, requires a value [default: floor(360/angle) or 12].
+  -a, --angle        Set the angle of rotation between two pictures in degrees, requires a value [default: round(360/n_pictures) or 30].
+  -w, --width        Set the width of the image, requires a value [default: 1920].
+  -h, --height       Set the height of the image, requires a value [default: 1080].
+  --axis             Set the axis of rotation, requires a value [default: y].
+  --no-movie         Do not create an mp4 of the molecule.
+  
+This script takes p pictures with a degrees rotation interval of a molecule in 3D using ChimeraX"
+
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        echo "$help_msg"
+        return 0
+    fi
+
+    local input_file=$(realpath "$1")
+    local output_folder="/tmp/chimerax_snapshots"
+    local name=$(basename "$input_file" | cut -d. -f1)
+    local input_extension=$(basename "$input_file" | cut -d. -f2)
+    local input_is_log=$(echo "$input_extension" | grep -i "log")
+    local angle=30
+    local angle_given=false
+    local n_pictures=12
+    local n_pictures_given=false
+    local width=1920
+    local height=1080
+    local axis="y"
+    local movie=true
+
+    shift 1
+    # Check for flags
+    while (( "$#" )); do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            -p|--pictures)
+                n_pictures="$2"
+                n_pictures_given=true
+                shift 2
+                ;;
+            -a|--angle)
+                angle="$2"
+                angle_given=true
+                shift 2
+                ;;
+            -w|--width)
+                width="$2"
+                shift 2
+                ;;
+            -h|--height)
+                height="$2"
+                shift 2
+                ;;
+            -o|--output)
+                output_folder=$(realpath "$2")
+                shift 2
+                ;;
+            --axis)
+                axis="$2"
+                shift 2
+                ;;
+            --no-movie)
+                movie=false
+                shift
+                ;;
+            *)
+                echo "\033[1;31mUnknown flag: $1\033[0m"
+                return 1
+                ;;
+        esac
+    done
+
+    # Safely create the output folder
+    mkdir -p "$output_folder"
+    
+    # If the angle is not given but the number of pictures is, calculate the angle
+    if [ "$n_pictures_given" = true ] && [ "$angle_given" = false ]; then
+        angle=$(printf "%.0f" $(echo "360/$n_pictures" | bc -l))
+    fi
+
+    if [ "$n_pictures_given" = false ] && [ "$angle_given" = true ]; then
+        n_pictures=$(printf "%.0f" $(echo "360/$angle" | bc)) # No -l to round down
+    fi
+
+    # Create the script file:
+    local script_file="/tmp/chimera_script.cxc"
+    echo "windowsize $width $height" > "$script_file"
+    echo "open $input_file" >> "$script_file"
+    echo "open $PATH_MORTALS/chimera_base_config.cxc" >> "$script_file"
+    for i in $(seq 0 $((n_pictures-1))); do
+        formatted_i=$(printf "%03d" $i)
+        echo "save $output_folder/${name}_${formatted_i}.png" >> "$script_file"
+        echo "turn $axis $angle 1" >> "$script_file"
+        echo "wait 1" >> "$script_file"
+    done
+    if [ "$movie" = true ]; then
+        echo "movie record" >> "$script_file"
+        if [ "$input_is_log" ]; then
+            echo "open $input_file" >> "$script_file" # I open it twice to create a nice morphing effect
+            echo "open $PATH_MORTALS/chimera_base_config.cxc" >> "$script_file"
+            echo "hide #2" >> "$script_file"
+            echo "coordset #1 1" >> "$script_file"
+            echo "morph #1 #2 frames 50" >> "$script_file"
+            echo "wait 50" >> "$script_file"
+            echo "delete #2" >> "$script_file" # Should not impact the visual, and improves performance slightly
+        fi
+        echo "turn y 0 25" >> "$script_file" # Not the cleanest, but wait 25 frames
+        echo "wait 25" >> "$script_file"
+        echo "turn y 2 180" >> "$script_file"
+        echo "wait 180" >> "$script_file"
+        echo "movie encode $output_folder/${name}.mp4" >> "$script_file"
+    fi
+
+    # Actually run the command
+    command="chimerax --offscreen --script $script_file --exit --silent"
+    eval "$command"
+    echo "Pictures saved in $output_folder"
+    if [ "$movie" = true ]; then
+        echo "Movie saved as $output_folder/${name}.mp4"
+    fi
 }

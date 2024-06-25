@@ -1,0 +1,58 @@
+#General
+
+style ball
+color halfbond false
+size stickRadius 0.075
+color #303030 target b
+graphics silhouettes true
+set bgColor white
+lighting soft intensity 0.5 shadows false
+material specularReflectivity 0
+
+
+# Color
+
+sel ~(C|H|N|O|F|P|S|Cl|Br|I)
+color all #FFC0CB target a
+size all atomRadius 1.75
+sel #0
+
+color C #606060
+color H white
+color N #2980B9
+color O #C0392B
+color F #90E050
+color P #FFA500
+color S #F1C40F
+color Cl #1FF01F
+color Br #802828
+color I #A020F0
+
+
+# Size
+
+sel ~(C|H|N|O|F|P|S|Cl|Br|I|Au|Al|Fe|Ni|Ti|Cl)
+size sel atomRadius 1.75
+sel #0
+
+size H atomRadius 1.25
+size Au atomRadius 2.5
+size Al atomRadius 1.8
+size Fe atomRadius 1.9
+size Ni atomRadius 1.9
+size Ti atomRadius 1.45
+size Cl atomRadius 1.75
+
+
+# Symbol of non-common atoms
+
+sel ~(C|H|O|F|N|P|S)
+label sel atoms attribute element
+sel #0
+
+
+# Point of view
+
+sel all
+view sel pad 0.3
+sel #0
