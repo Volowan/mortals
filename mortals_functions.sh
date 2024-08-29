@@ -1,11 +1,46 @@
 start_local_cdk()
 {
+    local help_msg="Usage:
+  start_local_cdk [OPTIONS]
+  start_local_cdk -h | --help
+Options:
+  -o, --open        Open the browser after starting the local CDK server.
+
+This script starts the local CDK server for molecule depiction."
+
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        echo "$help_msg"
+        return 0
+    fi
+
+    local open_browser=false
+
+    while (( "$#" )); do
+        case "$1" in
+            -o|--open)
+                open_browser=true
+                shift
+                ;;
+            *)
+                echo "Unknown flag: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
     if pgrep -f "cdkdepict-webapp" > /dev/null; then
-        echo "\033[1;30mLocal CDK is already running at http://localhost:8081/depict.html\033[0m"
+        if [ "$open_browser" = true ]; then
+            (nohup xdg-open "http://localhost:8081/depict.html" >/dev/null 2>&1 &)
+        else
+            echo "\033[1;30mLocal CDK is already running at http://localhost:8081/depict.html\033[0m"
+        fi
         return 0
     else
         (nohup java -Dserver.port=8081 -jar $PATH_CDK_SNAPSHOT &> /dev/null &)
         echo "\033[1;30mLocal CDK started at http://localhost:8081/depict.html\033[0m"
+        if [ "$open_browser" = true ]; then
+            (nohup xdg-open "http://localhost:8081/depict.html" >/dev/null 2>&1 &)
+        fi
     fi
 }
 
@@ -50,11 +85,18 @@ smiles_to_iupac() {
 
     local rep="iupac_name"
     local url="https://cactus.nci.nih.gov/chemical/structure/${smiles}/${rep}"
+    local timeout=5
+
 
     # Make the HTTP GET request and decode URL-encoded characters
-    local response=$(curl -s -f "$url")
+    local response=$(curl -s -f --max-time $timeout "$url")
     # Check if the response is empty
-    if [ -z "$response" ]; then
+    
+    if [ $? -ne 0 ]; then
+        # write in red
+        echo -e "\033[1;31mError: No response from the CACTUS API. Using STOUT ml model instead.\033[0m"
+        smiles_to_iupac_stout "$smiles"
+    elif [ -z "$response" ]; then
         # Call the fallback function if no response
         echo -e "\033[1;33mNo response from the CACTUS API. Using STOUT ml model instead.\033[0m"
         smiles_to_iupac_stout "$smiles"
@@ -292,6 +334,9 @@ Options:
   -h, --height       Set the height of the image, requires a value [default: 1080].
   --axis             Set the axis of rotation, requires a value [default: y].
   --no-movie         Do not create an mp4 of the molecule.
+  --preset           Add a preset on top of chimera_base_config.cxc [default: None] (only base_config).
+  --turns            Set the number of turns to make in the movie [default: 1].
+  --optimization     Show the optimization of the molecule in the movie, need either two files or a log file with multiple structures.
   
 This script takes p pictures with a degrees rotation interval of a molecule in 3D using ChimeraX"
 
@@ -300,11 +345,8 @@ This script takes p pictures with a degrees rotation interval of a molecule in 3
         return 0
     fi
 
-    local input_file=$(realpath "$1")
     local output_folder="/tmp/chimerax_snapshots"
     local name=$(basename "$input_file" | cut -d. -f1)
-    local input_extension=$(basename "$input_file" | cut -d. -f2)
-    local input_is_log=$(echo "$input_extension" | grep -i "log")
     local angle=30
     local angle_given=false
     local n_pictures=12
@@ -313,8 +355,13 @@ This script takes p pictures with a degrees rotation interval of a molecule in 3
     local height=1080
     local axis="y"
     local movie=true
+    local preset="$PATH_MORTALS/chimera_base_config.cxc"
+    local turns=1
+    local optimization=false
 
-    shift 1
+    local input_files=""
+    local number_input_files=0
+
     # Check for flags
     while (( "$#" )); do
         case "$1" in
@@ -352,30 +399,94 @@ This script takes p pictures with a degrees rotation interval of a molecule in 3
                 movie=false
                 shift
                 ;;
+            --preset)
+                # add the preset to preset with a space
+                preset="$preset $2"
+                shift 2
+                ;;
+            --turns)
+                turns="$2"
+                shift 2
+                ;;
+            --optimization)
+                optimization=true
+                shift
+                ;;
             *)
-                echo "\033[1;31mUnknown flag: $1\033[0m"
-                return 1
+                if [ $number_input_files -eq 0 ]; then
+                    input_files="$1"
+                    number_input_files=1
+                else
+                    input_files="$input_files $1"
+                    number_input_files=$((number_input_files+1))
+                fi
+                shift
                 ;;
         esac
     done
+
+    # Main input file is the realpath of the first input file
+    input_file=$(realpath $(echo "$input_files" | cut -d" " -f1))
+    local input_extension=$(basename "$input_file" | cut -d. -f2)
+    # Need check that all extensions of files are the same
+    local input_is_log=$(echo "$input_extension" | grep -i "log")
+
+    echo "Input extension is $input_extension"
+    echo "Inputs are $input_files"
+    echo "Input file is $input_file"
+
+    if [ $number_input_files -eq 0 ]; then
+        echo "Error: No input file provided" >&2
+        return 1
+    fi
+
+    # If user asks for optimization, check for .log or two files
+    # In the future, this could be extended to multiple files one after the other
+    if [ "$optimization" = true ]; then
+        if [ "$input_is_log" = false ] && [ $number_input_files -ne 2 ]; then
+            echo "Error: Need exactly 2 files for optimization, $number_input_files detected" >&2 
+            return 1
+        elif [ "$input_is_log" = true ] && [ $number_input_files -ne 2 ]; then
+            echo "Error: Need exactly 1 log file for optimization for the moment" >&2
+            return 1
+        fi
+    else
+        if [ $number_input_files -ne 1 ]; then
+            echo "Error: Need exactly 1 file when not dealing with an optimization, $number_input_files detected" >&2
+            return 1
+        fi
+    fi
 
     # Safely create the output folder
     mkdir -p "$output_folder"
     
     # If the angle is not given but the number of pictures is, calculate the angle
     if [ "$n_pictures_given" = true ] && [ "$angle_given" = false ]; then
-        angle=$(printf "%.0f" $(echo "360/$n_pictures" | bc -l))
+        # Total angle is 360*turns
+        local total_angle=$((360*$turns))
+        angle=$(printf "%.0f" $(echo "$total_angle/$n_pictures" | bc -l))
     fi
 
     if [ "$n_pictures_given" = false ] && [ "$angle_given" = true ]; then
-        n_pictures=$(printf "%.0f" $(echo "360/$angle" | bc)) # No -l to round down
+        n_pictures=$(printf "%.0f" $(echo "$total_angle/$angle" | bc)) # No -l to round down
+    fi
+
+
+    if [ "$optimization" = true ] && ! [ "$input_is_log" ]; then
+        input_file_2=$(realpath $(echo "$input_files" | cut -d" " -f2))
     fi
 
     # Create the script file:
     local script_file="/tmp/chimera_script.cxc"
     echo "windowsize $width $height" > "$script_file"
     echo "open $input_file" >> "$script_file"
-    echo "open $PATH_MORTALS/chimera_base_config.cxc" >> "$script_file"
+    # open each preset
+    for i in $preset; do
+        echo "open $i" >> "$script_file"
+    done
+    echo "open $PATH_MORTALS/chimera_reframe.cxc" >> "$script_file"
+
+    echo "n_pictures: $n_pictures"
     for i in $(seq 0 $((n_pictures-1))); do
         formatted_i=$(printf "%03d" $i)
         echo "save $output_folder/${name}_${formatted_i}.png" >> "$script_file"
@@ -384,19 +495,51 @@ This script takes p pictures with a degrees rotation interval of a molecule in 3
     done
     if [ "$movie" = true ]; then
         echo "movie record" >> "$script_file"
-        if [ "$input_is_log" ]; then
-            echo "open $input_file" >> "$script_file" # I open it twice to create a nice morphing effect
-            echo "open $PATH_MORTALS/chimera_base_config.cxc" >> "$script_file"
-            echo "hide #2" >> "$script_file"
-            echo "coordset #1 1" >> "$script_file"
-            echo "morph #1 #2 frames 50" >> "$script_file"
-            echo "wait 50" >> "$script_file"
-            echo "delete #2" >> "$script_file" # Should not impact the visual, and improves performance slightly
+        if [ "$optimization" = true ]; then
+            if [ "$input_is_log" ]; then
+                echo "recognizing log file"
+                echo "open $input_file" >> "$script_file" # I open it twice to create a nice morphing effect
+                for i in $preset; do
+                    echo "open $i" >> "$script_file"
+                done
+                echo "hide #2" >> "$script_file"
+                echo "coordset #1 1" >> "$script_file"
+                echo "morph #1 #2 frames 50" >> "$script_file"
+                echo "wait 50" >> "$script_file"
+                echo "delete #2" >> "$script_file" # Should not impact the visual, and improves performance slightly
+            elif [ "$input_extension" = "cif" ]; then
+                # Align cifs
+                echo "I recognized cif here I would align the two files"
+                echo "open $input_file_2" >> "$script_file"
+                echo "morph #2 #1 frames 50" >> "$script_file"
+                echo "hide #1" >> "$script_file"
+                echo "hide #2" >> "$script_file"
+                echo "bond #3" >> "$script_file"
+                for i in $preset; do
+                    echo "open $i" >> "$script_file"
+                done
+                echo "wait 50" >> "$script_file"
+                echo "delete #1" >> "$script_file"
+                echo "delete #2" >> "$script_file"
+
+                for i in $preset; do
+                    echo "open $i" >> "$script_file"
+                done
+            else
+                echo "open $input_file_2" >> "$script_file"
+                for i in $preset; do
+                    echo "open $i" >> "$script_file"
+                done
+                echo "hide #2" >> "$script_file"
+                echo "morph #2 #1 frames 50" >> "$script_file"
+                echo "wait 50" >> "$script_file"
+                echo "delete #2" >> "$script_file"
+            fi
         fi
         echo "turn y 0 25" >> "$script_file" # Not the cleanest, but wait 25 frames
         echo "wait 25" >> "$script_file"
-        echo "turn y 2 180" >> "$script_file"
-        echo "wait 180" >> "$script_file"
+        echo "turn y 2 $((180*turns))" >> "$script_file"
+        echo "wait $((180*turns))" >> "$script_file"
         echo "movie encode $output_folder/${name}.mp4" >> "$script_file"
     fi
 
@@ -407,4 +550,60 @@ This script takes p pictures with a degrees rotation interval of a molecule in 3
     if [ "$movie" = true ]; then
         echo "Movie saved as $output_folder/${name}.mp4"
     fi
+}
+
+one_snapshot_3d() {
+    local help_msg="Usage:
+    one_snapshot_3d INPUT_FILE PRESET OUTPUT_FILE
+    one_snapshot_3d -h | --help"
+
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        echo "$help_msg"
+        return 0
+    fi
+    
+    local input_file=$1
+    local preset=$2
+    local output_file=$3
+    
+    local script_file="/tmp/chimera_script.cxc"
+    echo "windowsize 1920 1080" > "$script_file"
+    echo "open $input_file" >> "$script_file"
+    echo "open $preset" >> "$script_file"
+    echo "save $output_file" >> "$script_file"
+
+    command="chimerax --offscreen --script $script_file --exit --silent"
+    eval "$command"
+}
+
+show_chimerax_3d(){
+
+    files_to_open=""
+    preset="$PATH_MORTALS/chimera_base_config_human.cxc"
+
+    while (( "$#" )); do
+        case "$1" in
+            -p|--preset)
+                # add the preset to preset with a space
+                preset="$preset $2"
+                shift 2
+                ;;
+            *)
+                # Check if file variable is empty
+                if [ -z "$files_to_open" ]; then
+                    files_to_open="$1"
+                else
+                    files_to_open="$files_to_open $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    echo "Opening the following files in chimerax: $files_to_open"
+    echo "Using the following preset: $preset"
+
+    # Open the files in chimerax
+    local command="(nohup chimerax $files_to_open $preset >/dev/null 2>&1 &)"
+    eval "$command"
 }

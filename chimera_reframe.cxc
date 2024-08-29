@@ -1,0 +1,6 @@
+# Point of view
+
+sel all
+view sel pad 0.3
+sel #0
+
