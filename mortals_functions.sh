@@ -29,19 +29,30 @@ This script starts the local CDK server for molecule depiction."
     done
 
     if pgrep -f "cdkdepict-webapp" > /dev/null; then
-        if [ "$open_browser" = true ]; then
-            (nohup xdg-open "http://localhost:8081/depict.html" >/dev/null 2>&1 &)
-        else
+        if [ "$open_browser" = false ]; then
             echo "\033[1;30mLocal CDK is already running at http://localhost:8081/depict.html\033[0m"
+            return 0
         fi
-        return 0
     else
+        echo "\033[1;33mLocal CDK was not running, initializing it at http://localhost:8081/depict.html...\033[0m"
         (nohup java -Dserver.port=8081 -jar $PATH_CDK_SNAPSHOT &> /dev/null &)
-        echo "\033[1;30mLocal CDK started at http://localhost:8081/depict.html\033[0m"
-        if [ "$open_browser" = true ]; then
-            (nohup xdg-open "http://localhost:8081/depict.html" >/dev/null 2>&1 &)
-        fi
+        # Wait for the server to start by pinging it
+        local max_attempts=100
+        local current_attempt=0
+        while ! curl -s "http://localhost:8081/depict.html" > /dev/null; do
+            sleep 0.1
+            current_attempt=$((current_attempt+1))
+            if [ $current_attempt -eq $max_attempts ]; then
+                echo "\033[1;31mCDK failed to initialize.\033[0m"
+                return 1
+            fi
+        done
+        echo "\033[1;32mCDK initialized successfully.\033[0m"
     fi
+    if [ "$open_browser" = true ]; then
+        (nohup xdg-open "http://localhost:8081/depict.html" >/dev/null 2>&1 &)
+    fi
+    return 0
 }
 
 check_valid_cdk_image () {
@@ -114,7 +125,7 @@ smiles_to_iupac() {
 
 smiles_to_iupac_stout() {
     mamba activate mortals
-    var="import os; os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'; from STOUT import translate_forward; print(translate_forward(\"""$@""\"))"; python -c "$var"
+    var="import os; os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'; from STOUT import translate_forward; print(translate_forward(\"""$@""\"))"; python -c "$var"
     mamba deactivate
 }
 
@@ -144,34 +155,21 @@ fetch_image_cdk() {
 
 Options:
   -m, --mapped      Set annotation to colormap, [default: off].
+  -i, --idx         Set annotation to index, [default: off].
+  -mi, --mappedidx  Set annotation to mapping index, [default: off].
   -a, --abbr        Set abbreviation mode to abbreviated [default: off].
   -z, --zoom        Set zoom level, requires a value [default: 4].
   -w, --width       Set image width, requires a value and needs for height to be set too. [default: -1].
   -h, --height      Set image height, requires a value and needs for width to be set too. [default: -1].
   -t, --type        Set the type of depiction, (cob for ColorOnBlack, bot for BlackOnTransparent, cow for ColorOnWhite, etc.) [default: cow].
   -r, --rotation    Set the rotation angle in degrees, requires a value [default: 0].
+  --sma             Set the a smarts pattern to match.
   --svg             Set the image format to SVG [default: PNG].
 
 This script fetches and displays a molecule image based on SMILES input."
     
     if ! pgrep -f "cdkdepict-webapp" > /dev/null; then
-        echo "\033[1;33mLocal CDK was not running, initializing it...\033[0m"
-        (nohup java -Dserver.port=8081 -jar  ~/Documents/liac/cdk_depict/cdkdepict-webapp/target/cdkdepict-webapp-1.11-SNAPSHOT.war &> /dev/null &)
-        local correclty_initialized=false
-        for i in {1..20}
-        do
-            sleep 0.1
-            if pgrep -f "cdkdepict-webapp" > /dev/null; then
-                correclty_initialized=true
-                break
-            fi
-        done
-        if [ "$correclty_initialized" = false ]; then
-            echo "\033[1;31mCDK failed to initialize.\033[0m"
-            return 1
-        fi
-        sleep 3
-        echo "\033[1;32mCDK initialized successfully.\033[0m"
+        start_local_cdk
     fi
 
 
@@ -180,12 +178,18 @@ This script fetches and displays a molecule image based on SMILES input."
         return 0
     fi
 
-    local all_args=("$@")
-    local smi=$1
-    shift
-    smi_encoded=$(echo -n "$smi" | jq -sRr @uri)
-    local safe_smi=$(echo "$smi" | sed 's/[\/@ ]/_/g')
-    local name_hash=$(echo "$all_args" | sha256sum | cut -c1-24)
+    if [ -z "$1" ]; then
+        # No argument provided, read from stdin, useful for piping
+        while IFS= read -r line; do
+            local smi="$line"
+        done
+    else
+        # Argument provided, process as before
+        all_args=("$@")
+        local smi="$1"
+        shift
+    fi
+
     local annotate="none"
     local hdisp="bridgehead"
     local zoom=4
@@ -195,12 +199,22 @@ This script fetches and displays a molecule image based on SMILES input."
     local type="cow"
     local rotation=0
     local image_format="png"
+    local smart=""
     
     # Check for flags
     while (( "$#" )); do
         case "$1" in
             -m|--mapped)
                 annotate="colmap"
+                type="bow"
+                shift
+                ;;
+            -i|--idx)
+                annotate="number"
+                shift
+                ;;
+            -mi|--mappedidx)
+                annotate="mapidx"
                 type="bow"
                 shift
                 ;;
@@ -232,6 +246,11 @@ This script fetches and displays a molecule image based on SMILES input."
                 image_format="svg"
                 shift
                 ;;
+            --sma)
+                type="bow"
+                smart="$2"
+                shift 2
+                ;;
             *)
                 echo "\033[1;31mUnknown flag: $1\033[0m"
                 return 1
@@ -242,35 +261,46 @@ This script fetches and displays a molecule image based on SMILES input."
     # Create the output directory if it doesn't exist
     mkdir -p "/tmp/molecule_preview"
 
-    local temp_file=$(mktemp)
-    local outfile="/tmp/molecule_preview/"$name_hash".$image_format"
-    
-    # Use curl to make the HTTP GET request
-    local url="http://localhost:8081/depict/$type/$image_format"
-    #-H "Accept: image/$image_format" \
-    curl -G "$url" \
-        --data "smi=$smi_encoded" \
-        --data "w=$width" \
-        --data "h=$height" \
-        --data "abbr=$abbr" \
-        --data "hdisp=$hdisp" \
-        --data "zoom=$zoom" \
-        --data "annotate=$annotate" \
-        --data "r=$rotation" \
-        --output "$temp_file" \
-        --silent
+    echo "$smi" | while IFS= read -r line
+    do
+        local smi_encoded=$(echo -n "$line" | jq -sRr @uri)
+        local sma_encoded=$(echo -n "$smart" | jq -sRr @uri)
+        local safe_smi=$(echo "$line" | sed 's/[\/@ ]/_/g')
+        local name_hash=$(echo "$line$annotate$hdisp$zoom$width$height$abbr$type$rotation$smart" | sha256sum | cut -c1-24)
 
-    # Check if the image was fetched successfully
-    if ! check_valid_cdk_image "$temp_file"; then
-        echo "Error: Invalid SMILES string received for $smi_encoded" >&2
-        rm "$temp_file"
-    else
-        mv "$temp_file" "$outfile"
-        command=(feh "$outfile")
-        # But make it run in the background and
-        # as silent as possible
-        (nohup $command > /dev/null 2>&1 &)
-    fi
+
+        local temp_file=$(mktemp)
+        local outfile="/tmp/molecule_preview/"$name_hash".$image_format"
+        
+        # Use curl to make the HTTP GET request
+        local url="http://localhost:8081/depict/$type/$image_format"
+        #-H "Accept: image/$image_format" \
+        curl -G "$url" \
+            --data "smi=$smi_encoded" \
+            --data "w=$width" \
+            --data "h=$height" \
+            --data "abbr=$abbr" \
+            --data "hdisp=$hdisp" \
+            --data "zoom=$zoom" \
+            --data "annotate=$annotate" \
+            --data "r=$rotation" \
+            --data "sma=$sma_encoded" \
+            --output "$temp_file" \
+            --silent
+
+        # Check if the image was fetched successfully
+        if ! check_valid_cdk_image "$temp_file"; then
+            echo "Error: Invalid SMILES string received for $smi_encoded" >&2
+            rm "$temp_file"
+        else
+            mv "$temp_file" "$outfile"
+            cp "$outfile" "/tmp/molecule_preview/last.$image_format"
+            command=(feh "$outfile")
+            # But make it run in the background and
+            # as silent as possible
+            (nohup $command > /dev/null 2>&1 &)
+        fi
+    done
 }
 
 fetch_image_cdk_name () {
